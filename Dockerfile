@@ -1,14 +1,17 @@
-# Use a lightweight Python base image
+# Use a lightweight Python base image. 'slim-buster' is generally stable.
 FROM python:3.11-slim-buster
+
+# Set environment variable to prevent apt-get from prompting for user input
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies required for pdf2image and PyMuPDF
 # poppler-utils: for pdf2image
 # libpoppler-dev: for PyMuPDF to work correctly with Poppler (though PyMuPDF is often self-contained for rendering, this is good for robustness)
-# build-essential: generally useful for compiling extensions, though might not be strictly needed for PyMuPDF itself
-RUN apt-get update && apt-get install -y \
-    poppler-utils \
-    libpoppler-dev \
-    # build-essential # ممكن متحتجهاش لو مفيش C extensions بتتبنى
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        poppler-utils \
+        libpoppler-dev \
+        # build-essential # ممكن متحتجهاش لو مفيش C extensions بتتبنى
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory inside the container
