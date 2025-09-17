@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 import os
@@ -21,9 +21,9 @@ logging.basicConfig(level=logging.DEBUG)
 # إضافة CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],  # Allows all origins, adjust as needed
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers
 )
 
@@ -32,7 +32,7 @@ OUTPUT_BASE = Path("static/images")
 OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# مدة الاحتفاظ بالصور (24 ساعة)
+# مدة الاحتفاظ بالصور (24 ساعة = 86400 ثانية)
 EXPIRY_SECONDS = 24 * 60 * 60
 
 # ========== دالة كشف الوجوه ==========
@@ -119,9 +119,8 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
         if not extracted_images:
             raise HTTPException(status_code=404, detail="مفيش صور فيها وش في الملف ده")
 
-        # توليد الروابط كاملة بالـ host مع دعم HTTPS عبر proxy
-        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        base_url = str(request.base_url).rstrip("/").replace("http://", f"{proto}://")
+        # توليد الروابط كاملة بالـ host
+        base_url = str(request.base_url).rstrip("/")
         full_links = [f"{base_url}{url}" for url in extracted_images]
 
         return JSONResponse(content={"image_urls": full_links})
