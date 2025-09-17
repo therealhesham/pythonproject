@@ -63,7 +63,7 @@ scheduler.add_job(cleanup_old_sessions, "interval", hours=1)
 scheduler.start()
 
 # ========== الـ API ==========
-@app.post("/extract-images/")
+@app.post("/extract-images")
 async def extract_images(file: UploadFile = File(...), request: Request = None):
     # Validate PDF file
     if not file.filename.lower().endswith(".pdf"):
