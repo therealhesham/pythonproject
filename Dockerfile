@@ -1,6 +1,4 @@
-# Use a lightweight Python base image with a more recent Debian release.
-# 'slim-bullseye' or 'slim-bookworm' are good choices.
-# Let's try 'slim-bullseye' first.
+# Use a lightweight Python base image with a recent Debian release
 FROM python:3.11-slim-bullseye
 
 # Set environment variable to prevent apt-get from prompting for user input
@@ -11,7 +9,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         poppler-utils \
         libpoppler-dev \
-        # build-essential # يمكنك إلغاء التعليق إذا لزم الأمر
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory inside the container
@@ -26,10 +23,11 @@ RUN pip install --no-cache-dir \
     uvicorn[standard] \
     pdf2image \
     PyMuPDF \
-    Pillow
+    Pillow \
+    python-multipart
 
 # Expose the port your FastAPI application will listen on
 EXPOSE 8000
 
 # Command to run your FastAPI application with uvicorn
-CMD ["sleep", "infinity"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug"]
