@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 import os
@@ -17,6 +18,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = FastAPI()
 logging.basicConfig(level=logging.DEBUG)
 
+# إضافة CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins, adjust as needed
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+
 # مجلد ثابت لتخزين الصور
 OUTPUT_BASE = Path("static/images")
 OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
@@ -24,7 +34,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # مدة الاحتفاظ بالصور (24 ساعة = 86400 ثانية)
 EXPIRY_SECONDS = 24 * 60 * 60
-
 
 # ========== دالة كشف الوجوه ==========
 def contains_face(image_path: str) -> bool:
@@ -38,7 +47,6 @@ def contains_face(image_path: str) -> bool:
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
     return len(faces) > 0
 
-
 # ========== دالة مسح الملفات القديمة ==========
 def cleanup_old_sessions():
     now = time.time()
@@ -49,12 +57,10 @@ def cleanup_old_sessions():
                 logging.info(f"🗑️ حذف المجلد: {session_dir}")
                 shutil.rmtree(session_dir, ignore_errors=True)
 
-
 # تشغيل الجدولة كل ساعة
 scheduler = BackgroundScheduler()
 scheduler.add_job(cleanup_old_sessions, "interval", hours=1)
 scheduler.start()
-
 
 # ========== الـ API ==========
 @app.post("/extract-images/")
