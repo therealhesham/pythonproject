@@ -4,11 +4,13 @@ FROM python:3.11-slim-bullseye
 # Set environment variable to prevent apt-get from prompting for user input
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies required for pdf2image and PyMuPDF
+# Install system dependencies required for pdf2image, PyMuPDF, and OpenCV
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         poppler-utils \
         libpoppler-dev \
+        libgl1 \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory inside the container
@@ -24,7 +26,8 @@ RUN pip install --no-cache-dir \
     pdf2image \
     PyMuPDF \
     Pillow \
-    python-multipart
+    python-multipart \
+    opencv-python-headless
 
 # Expose the port your FastAPI application will listen on
 EXPOSE 8000
