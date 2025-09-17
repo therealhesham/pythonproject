@@ -1,5 +1,6 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 import os
@@ -7,16 +8,29 @@ import shutil
 from pathlib import Path
 import tempfile
 import logging
-import zipfile
 import cv2  # OpenCV
+import uuid
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
 
+# إعداد FastAPI
 app = FastAPI()
 logging.basicConfig(level=logging.DEBUG)
 
+# مجلد ثابت لتخزين الصور
+OUTPUT_BASE = Path("static/images")
+OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# دالة للكشف عن الوجوه
+# مدة الاحتفاظ بالصور (24 ساعة = 86400 ثانية)
+EXPIRY_SECONDS = 24 * 60 * 60
+
+
+# ========== دالة كشف الوجوه ==========
 def contains_face(image_path: str) -> bool:
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
     img = cv2.imread(image_path)
     if img is None:
         return False
@@ -25,18 +39,32 @@ def contains_face(image_path: str) -> bool:
     return len(faces) > 0
 
 
+# ========== دالة مسح الملفات القديمة ==========
+def cleanup_old_sessions():
+    now = time.time()
+    for session_dir in OUTPUT_BASE.iterdir():
+        if session_dir.is_dir():
+            created_at = session_dir.stat().st_mtime
+            if now - created_at > EXPIRY_SECONDS:
+                logging.info(f"🗑️ حذف المجلد: {session_dir}")
+                shutil.rmtree(session_dir, ignore_errors=True)
+
+
+# تشغيل الجدولة كل ساعة
+scheduler = BackgroundScheduler()
+scheduler.add_job(cleanup_old_sessions, "interval", hours=1)
+scheduler.start()
+
+
+# ========== الـ API ==========
 @app.post("/extract-images/")
-async def extract_images(file: UploadFile = File(...)):
+async def extract_images(file: UploadFile = File(...), request: Request = None):
     # Validate PDF file
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="الملف يجب أن يكون بصيغة PDF")
 
-    # Create temporary directory
+    # Temporary folder
     temp_dir = tempfile.mkdtemp()
-    output_folder = os.path.join(temp_dir, "output_images")
-    os.makedirs(output_folder, exist_ok=True)
-
-    # Save uploaded PDF
     pdf_path = os.path.join(temp_dir, file.filename)
     with open(pdf_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -44,7 +72,12 @@ async def extract_images(file: UploadFile = File(...)):
     try:
         extracted_images = []
 
-        # 1. Extract embedded images using PyMuPDF
+        # مجلد خاص لكل رفع
+        session_id = str(uuid.uuid4())
+        output_folder = OUTPUT_BASE / session_id
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        # 1. استخراج الصور المدمجة داخل PDF
         pdf_document = fitz.open(pdf_path)
         for page_num in range(len(pdf_document)):
             page = pdf_document[page_num]
@@ -54,46 +87,37 @@ async def extract_images(file: UploadFile = File(...)):
                 base_image = pdf_document.extract_image(xref)
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
-                image_filename = f"{output_folder}/embedded_image_page{page_num + 1}_{img_index + 1}.{image_ext}"
-                with open(image_filename, "wb") as image_file:
-                    image_file.write(image_bytes)
+                image_filename = output_folder / f"embedded_page{page_num+1}_{img_index+1}.{image_ext}"
+                with open(image_filename, "wb") as f:
+                    f.write(image_bytes)
 
-                # فلترة الصور: بس اللي فيها وش
-                if contains_face(image_filename):
-                    extracted_images.append(image_filename)
+                if contains_face(str(image_filename)):
+                    extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
                 else:
-                    os.remove(image_filename)
+                    image_filename.unlink()
 
         pdf_document.close()
 
-        # 2. Convert PDF pages to images using pdf2image
-        poppler_path = os.getenv("POPPLER_PATH", None)  # None = Linux (Docker), set if Windows
+        # 2. تحويل الصفحات لصور
+        poppler_path = os.getenv("POPPLER_PATH", None)
         images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
         for i, image in enumerate(images):
-            image_filename = f"{output_folder}/page_{i + 1}.png"
+            image_filename = output_folder / f"page_{i+1}.png"
             image.save(image_filename, "PNG")
 
-            # فلترة الصور: بس اللي فيها وش
-            if contains_face(image_filename):
-                extracted_images.append(image_filename)
+            if contains_face(str(image_filename)):
+                extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
             else:
-                os.remove(image_filename)
+                image_filename.unlink()
 
         if not extracted_images:
             raise HTTPException(status_code=404, detail="مفيش صور فيها وش في الملف ده")
 
-        # 3. Create a ZIP file containing all extracted face images
-        zip_path = os.path.join(temp_dir, "extracted_images.zip")
-        with zipfile.ZipFile(zip_path, "w") as zipf:
-            for img_file in extracted_images:
-                zipf.write(img_file, arcname=os.path.basename(img_file))
+        # توليد الروابط كاملة بالـ host
+        base_url = str(request.base_url).rstrip("/")
+        full_links = [f"{base_url}{url}" for url in extracted_images]
 
-        # Return ZIP file as response
-        return FileResponse(
-            path=zip_path,
-            filename="extracted_images.zip",
-            media_type="application/zip"
-        )
+        return JSONResponse(content={"image_urls": full_links})
 
     except Exception as e:
         logging.error("Error processing file: %s", str(e))
@@ -101,4 +125,3 @@ async def extract_images(file: UploadFile = File(...)):
 
     finally:
         file.file.close()
-        # ملاحظة: بنسيب temp_dir لأن FileResponse محتاج الملف يفضل موجود

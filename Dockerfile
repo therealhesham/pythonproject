@@ -27,7 +27,14 @@ RUN pip install --no-cache-dir \
     PyMuPDF \
     Pillow \
     python-multipart \
-    opencv-python-headless
+    opencv-python-headless \
+    apscheduler
+
+# Make sure static folder exists
+RUN mkdir -p /app/static/images
+
+# Persist static files (optional but recommended)
+VOLUME ["/app/static"]
 
 # Expose the port your FastAPI application will listen on
 EXPOSE 8000
