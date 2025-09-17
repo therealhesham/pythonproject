@@ -8,9 +8,22 @@ from pathlib import Path
 import tempfile
 import logging
 import zipfile
+import cv2  # OpenCV
 
 app = FastAPI()
 logging.basicConfig(level=logging.DEBUG)
+
+
+# دالة للكشف عن الوجوه
+def contains_face(image_path: str) -> bool:
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    img = cv2.imread(image_path)
+    if img is None:
+        return False
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+    return len(faces) > 0
+
 
 @app.post("/extract-images/")
 async def extract_images(file: UploadFile = File(...)):
@@ -44,7 +57,12 @@ async def extract_images(file: UploadFile = File(...)):
                 image_filename = f"{output_folder}/embedded_image_page{page_num + 1}_{img_index + 1}.{image_ext}"
                 with open(image_filename, "wb") as image_file:
                     image_file.write(image_bytes)
-                extracted_images.append(image_filename)
+
+                # فلترة الصور: بس اللي فيها وش
+                if contains_face(image_filename):
+                    extracted_images.append(image_filename)
+                else:
+                    os.remove(image_filename)
 
         pdf_document.close()
 
@@ -54,9 +72,17 @@ async def extract_images(file: UploadFile = File(...)):
         for i, image in enumerate(images):
             image_filename = f"{output_folder}/page_{i + 1}.png"
             image.save(image_filename, "PNG")
-            extracted_images.append(image_filename)
 
-        # 3. Create a ZIP file containing all extracted images
+            # فلترة الصور: بس اللي فيها وش
+            if contains_face(image_filename):
+                extracted_images.append(image_filename)
+            else:
+                os.remove(image_filename)
+
+        if not extracted_images:
+            raise HTTPException(status_code=404, detail="مفيش صور فيها وش في الملف ده")
+
+        # 3. Create a ZIP file containing all extracted face images
         zip_path = os.path.join(temp_dir, "extracted_images.zip")
         with zipfile.ZipFile(zip_path, "w") as zipf:
             for img_file in extracted_images:
@@ -75,5 +101,4 @@ async def extract_images(file: UploadFile = File(...)):
 
     finally:
         file.file.close()
-        # ملاحظــة: بنسيب temp_dir لأن FileResponse محتاج الملف يفضل موجود
-        # ممكن نعمل background task عشان نمسحه بعد ما يتحمل
+        # ملاحظة: بنسيب temp_dir لأن FileResponse محتاج الملف يفضل موجود
