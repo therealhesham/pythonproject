@@ -117,7 +117,7 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
                 image_filename.unlink()
 
         if not extracted_images:
-            raise HTTPException(status_code=404, detail="مفيش صور فيها وش في الملف ده")
+            raise HTTPException(status_code=404, detail="لم يتمكن من تحديد صور وجه في الصورة")
 
         # توليد الروابط كاملة بالـ host
         base_url = str(request.base_url).rstrip("/")
