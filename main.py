@@ -104,7 +104,7 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
             single_path = output_folder / f"image_1{ext}"
             shutil.copy2(file_path, single_path)
 
-            # دعم GIF متعدد الإطارات
+            # دعم GIF متعدد الإطارات: استخراج كل الإطارات
             if ext == ".gif":
                 gif = cv2.VideoCapture(str(single_path))
                 frame_idx = 0
@@ -114,21 +114,16 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
                         break
                     frame_path = output_folder / f"frame_{frame_idx + 1}.png"
                     cv2.imwrite(str(frame_path), frame)
-                    if contains_face(str(frame_path)):
-                        extracted_images.append(f"/static/images/{session_id}/{frame_path.name}")
-                    else:
-                        frame_path.unlink(missing_ok=True)
+                    extracted_images.append(f"/static/images/{session_id}/{frame_path.name}")
                     frame_idx += 1
                 gif.release()
-                single_path.unlink(missing_ok=True)  # لا نحتاج النسخة الأصلية بعد استخراج الإطارات
-                if frame_idx == 1 and extracted_images:
-                    # gif من إطار واحد: أعد تسمية الإطار المحفوظ ليكون الاسم أوضح
-                    pass  # الروابط موجودة مسبقاً في extracted_images
+                single_path.unlink(missing_ok=True)
+                if frame_idx == 0:
+                    # لم يُقرأ أي إطار (ملف تالف أو غير مدعوم)
+                    extracted_images = []
             else:
-                if contains_face(str(single_path)):
-                    extracted_images.append(f"/static/images/{session_id}/{single_path.name}")
-                else:
-                    single_path.unlink(missing_ok=True)
+                # ملف صورة واحد: نرجعه دائماً كمستخرج (بدون اشتراط وجود وجه)
+                extracted_images.append(f"/static/images/{session_id}/{single_path.name}")
         else:
             # معالجة PDF كما سابقاً
             pdf_path = file_path
