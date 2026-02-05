@@ -16,8 +16,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from typing import List
 import io
 import img2pdf
-from PIL import Image
-import numpy as np
 
 # إعداد FastAPI
 app = FastAPI()
@@ -67,86 +65,114 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(cleanup_old_sessions, "interval", hours=1)
 scheduler.start()
 
+# صيغ الصور المدعومة للاستخراج المباشر
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
-def remove_white_background(image_bytes: bytes, threshold: int = 250) -> bytes:
-    """
-    جعل البكسلات البيضاء (أو القريبة من الأبيض) شفافة.
-    threshold: القيمة من 0–255؛ أي بكسل R,G,B >= threshold يُعتبر أبيض ويُجعل شفافاً.
-    """
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    arr = np.array(img)
-    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
-    white = (r >= threshold) & (g >= threshold) & (b >= threshold)
-    arr[white, 3] = 0
-    out = Image.fromarray(arr)
-    buf = io.BytesIO()
-    out.save(buf, format="PNG")
-    return buf.getvalue()
+def is_pdf(filename: str) -> bool:
+    return filename.lower().endswith(".pdf")
 
+def is_image_file(filename: str) -> bool:
+    return Path(filename).suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
 
 # ========== الـ API ==========
 @app.post("/extract-images")
 async def extract_images(file: UploadFile = File(...), request: Request = None):
-    # Validate PDF file
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="الملف يجب أن يكون بصيغة PDF")
+    fn = (file.filename or "").lower()
+    if not is_pdf(file.filename) and not is_image_file(file.filename):
+        raise HTTPException(
+            status_code=400,
+            detail="الملف يجب أن يكون بصيغة PDF أو صورة (jpg, png, gif, webp, bmp)",
+        )
 
     # Temporary folder
     temp_dir = tempfile.mkdtemp()
-    pdf_path = os.path.join(temp_dir, file.filename)
-    with open(pdf_path, "wb") as buffer:
+    file_path = os.path.join(temp_dir, file.filename or "upload")
+    with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     try:
         extracted_images = []
-
-        # مجلد خاص لكل رفع
         session_id = str(uuid.uuid4())
         output_folder = OUTPUT_BASE / session_id
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        # 1. استخراج الصور المدمجة داخل PDF
-        pdf_document = fitz.open(pdf_path)
-        for page_num in range(len(pdf_document)):
-            page = pdf_document[page_num]
-            image_list = page.get_images(full=True)
-            for img_index, img in enumerate(image_list):
-                xref = img[0]
-                base_image = pdf_document.extract_image(xref)
-                image_bytes = base_image["image"]
-                image_ext = base_image["ext"]
-                image_filename = output_folder / f"embedded_page{page_num+1}_{img_index+1}.{image_ext}"
-                with open(image_filename, "wb") as f:
-                    f.write(image_bytes)
+        if is_image_file(file.filename):
+            # استخراج مباشر من ملف صورة
+            ext = Path(file.filename).suffix.lower()
+            if ext == ".jpg":
+                ext = ".jpeg"
+            single_path = output_folder / f"image_1{ext}"
+            shutil.copy2(file_path, single_path)
+
+            # دعم GIF متعدد الإطارات
+            if ext == ".gif":
+                gif = cv2.VideoCapture(str(single_path))
+                frame_idx = 0
+                while True:
+                    ret, frame = gif.read()
+                    if not ret:
+                        break
+                    frame_path = output_folder / f"frame_{frame_idx + 1}.png"
+                    cv2.imwrite(str(frame_path), frame)
+                    if contains_face(str(frame_path)):
+                        extracted_images.append(f"/static/images/{session_id}/{frame_path.name}")
+                    else:
+                        frame_path.unlink(missing_ok=True)
+                    frame_idx += 1
+                gif.release()
+                single_path.unlink(missing_ok=True)  # لا نحتاج النسخة الأصلية بعد استخراج الإطارات
+                if frame_idx == 1 and extracted_images:
+                    # gif من إطار واحد: أعد تسمية الإطار المحفوظ ليكون الاسم أوضح
+                    pass  # الروابط موجودة مسبقاً في extracted_images
+            else:
+                if contains_face(str(single_path)):
+                    extracted_images.append(f"/static/images/{session_id}/{single_path.name}")
+                else:
+                    single_path.unlink(missing_ok=True)
+        else:
+            # معالجة PDF كما سابقاً
+            pdf_path = file_path
+            pdf_document = fitz.open(pdf_path)
+            for page_num in range(len(pdf_document)):
+                page = pdf_document[page_num]
+                image_list = page.get_images(full=True)
+                for img_index, img in enumerate(image_list):
+                    xref = img[0]
+                    base_image = pdf_document.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    image_filename = output_folder / f"embedded_page{page_num+1}_{img_index+1}.{image_ext}"
+                    with open(image_filename, "wb") as f:
+                        f.write(image_bytes)
+
+                    if contains_face(str(image_filename)):
+                        extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
+                    else:
+                        image_filename.unlink()
+
+            pdf_document.close()
+
+            poppler_path = os.getenv("POPPLER_PATH", None)
+            images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+            for i, image in enumerate(images):
+                image_filename = output_folder / f"page_{i+1}.png"
+                image.save(image_filename, "PNG")
 
                 if contains_face(str(image_filename)):
                     extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
                 else:
                     image_filename.unlink()
 
-        pdf_document.close()
-
-        # 2. تحويل الصفحات لصور
-        poppler_path = os.getenv("POPPLER_PATH", None)
-        images = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
-        for i, image in enumerate(images):
-            image_filename = output_folder / f"page_{i+1}.png"
-            image.save(image_filename, "PNG")
-
-            if contains_face(str(image_filename)):
-                extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
-            else:
-                image_filename.unlink()
-
         if not extracted_images:
             raise HTTPException(status_code=404, detail="لم يتمكن من تحديد صور وجه في الصورة")
 
-        # توليد الروابط كاملة بالـ host
         base_url = str(request.base_url).rstrip("/")
         full_links = [f"{base_url}{url}" for url in extracted_images]
 
         return JSONResponse(content={"image_urls": full_links})
 
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error("Error processing file: %s", str(e))
         raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء معالجة الملف: {str(e)}")
@@ -170,11 +196,6 @@ async def convert(images: List[UploadFile] = File(...)):
         if f.filename:
             contents = await f.read()
             if contents:
-                # Remove white background (make white pixels transparent) before PDF
-                try:
-                    contents = remove_white_background(contents)
-                except Exception:
-                    pass  # keep original if processing fails
                 img_list.append(contents)
 
     if not img_list:
