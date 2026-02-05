@@ -16,6 +16,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from typing import List
 import io
 import img2pdf
+from PIL import Image
+import numpy as np
 
 # إعداد FastAPI
 app = FastAPI()
@@ -64,6 +66,23 @@ def cleanup_old_sessions():
 scheduler = BackgroundScheduler()
 scheduler.add_job(cleanup_old_sessions, "interval", hours=1)
 scheduler.start()
+
+
+def remove_white_background(image_bytes: bytes, threshold: int = 250) -> bytes:
+    """
+    جعل البكسلات البيضاء (أو القريبة من الأبيض) شفافة.
+    threshold: القيمة من 0–255؛ أي بكسل R,G,B >= threshold يُعتبر أبيض ويُجعل شفافاً.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    arr = np.array(img)
+    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+    white = (r >= threshold) & (g >= threshold) & (b >= threshold)
+    arr[white, 3] = 0
+    out = Image.fromarray(arr)
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()
+
 
 # ========== الـ API ==========
 @app.post("/extract-images")
@@ -151,6 +170,11 @@ async def convert(images: List[UploadFile] = File(...)):
         if f.filename:
             contents = await f.read()
             if contents:
+                # Remove white background (make white pixels transparent) before PDF
+                try:
+                    contents = remove_white_background(contents)
+                except Exception:
+                    pass  # keep original if processing fails
                 img_list.append(contents)
 
     if not img_list:
