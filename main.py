@@ -139,11 +139,7 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
                     image_filename = output_folder / f"embedded_page{page_num+1}_{img_index+1}.{image_ext}"
                     with open(image_filename, "wb") as f:
                         f.write(image_bytes)
-
-                    if contains_face(str(image_filename)):
-                        extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
-                    else:
-                        image_filename.unlink()
+                    extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
 
             pdf_document.close()
 
@@ -152,14 +148,10 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
             for i, image in enumerate(images):
                 image_filename = output_folder / f"page_{i+1}.png"
                 image.save(image_filename, "PNG")
-
-                if contains_face(str(image_filename)):
-                    extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
-                else:
-                    image_filename.unlink()
+                extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
 
         if not extracted_images:
-            raise HTTPException(status_code=404, detail="لم يتمكن من تحديد صور وجه في الصورة")
+            raise HTTPException(status_code=404, detail="لم يتم العثور على أي صور في الملف")
 
         base_url = str(request.base_url).rstrip("/")
         full_links = [f"{base_url}{url}" for url in extracted_images]
