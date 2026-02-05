@@ -74,90 +74,6 @@ def is_pdf(filename: str) -> bool:
 def is_image_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
 
-
-def _extract_regions_from_image(
-    image_path: str, output_folder: Path, session_id: str
-) -> List[str]:
-    """
-    استخراج المناطق المستطيلة من صورة (صور شخصية، شعارات، إلخ) باستخدام كشف الحدود.
-    يُرجع قائمة روابط الصور المستخرجة.
-    """
-    img = cv2.imread(image_path)
-    if img is None:
-        return []
-    h, w = img.shape[:2]
-    if h < 50 or w < 50:
-        return []
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # طريقة 1: Canny للحواف الواضحة
-    edges1 = cv2.Canny(blurred, 50, 150)
-    # طريقة 2: Adaptive threshold للوثائق (صناديق فاتحة على خلفية)
-    thresh = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 10
-    )
-    edges2 = cv2.Canny(thresh, 50, 150)
-    edges = cv2.bitwise_or(edges1, edges2)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    edges = cv2.dilate(edges, kernel)
-
-    contours, _ = cv2.findContours(
-        edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    min_area = min(2000, (w * h) * 0.0015)  # لالتقاط الصور الشخصية والشعارات الصغيرة
-    max_area = (w * h) * 0.85               # استبعاد الصورة الكاملة
-    result_urls: List[str] = []
-    rects: List[tuple] = []
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < min_area or area > max_area:
-            continue
-        x, y, rw, rh = cv2.boundingRect(cnt)
-        if rw < 30 or rh < 30:
-            continue
-        aspect = rh / rw if rw else 0
-        if aspect < 0.15 or aspect > 6:
-            continue
-        rects.append((x, y, rw, rh, area))
-
-    # ترتيب حسب المساحة (الأكبر أولاً) وإزالة التداخل الكبير
-    rects.sort(key=lambda r: r[4], reverse=True)
-    kept: List[tuple] = []
-    for (x, y, rw, rh, area) in rects:
-        overlap = False
-        for (ox, oy, ow, oh, _) in kept:
-            ix = max(x, ox)
-            iy = max(y, oy)
-            iw = min(x + rw, ox + ow) - ix
-            ih = min(y + rh, oy + oh) - iy
-            if iw > 0 and ih > 0:
-                inter = iw * ih
-                if inter / area > 0.7 or inter / (ow * oh) > 0.7:
-                    overlap = True
-                    break
-        if not overlap:
-            kept.append((x, y, rw, rh, area))
-
-    padding = 4
-    for i, (x, y, rw, rh, _) in enumerate(kept[:25]):
-        x1 = max(0, x - padding)
-        y1 = max(0, y - padding)
-        x2 = min(w, x + rw + padding)
-        y2 = min(h, y + rh + padding)
-        crop = img[y1:y2, x1:x2]
-        if crop.size == 0:
-            continue
-        out_name = f"region_{i + 1}.png"
-        out_path = output_folder / out_name
-        cv2.imwrite(str(out_path), crop)
-        result_urls.append(f"/static/images/{session_id}/{out_name}")
-
-    return result_urls
-
 # ========== الـ API ==========
 @app.post("/extract-images")
 async def extract_images(file: UploadFile = File(...), request: Request = None):
@@ -206,15 +122,8 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
                     # لم يُقرأ أي إطار (ملف تالف أو غير مدعوم)
                     extracted_images = []
             else:
-                # محاولة استخراج المناطق من الصورة (صور شخصية، شعارات، صناديق)
-                extracted_images = _extract_regions_from_image(
-                    str(single_path), output_folder, session_id
-                )
-                # إن لم نجد مناطق، نُرجع الصورة كاملة
-                if not extracted_images:
-                    extracted_images.append(f"/static/images/{session_id}/{single_path.name}")
-                else:
-                    single_path.unlink(missing_ok=True)
+                # ملف صورة واحد: نرجعه دائماً كمستخرج (بدون اشتراط وجود وجه)
+                extracted_images.append(f"/static/images/{session_id}/{single_path.name}")
         else:
             # معالجة PDF كما سابقاً
             pdf_path = file_path
@@ -230,7 +139,11 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
                     image_filename = output_folder / f"embedded_page{page_num+1}_{img_index+1}.{image_ext}"
                     with open(image_filename, "wb") as f:
                         f.write(image_bytes)
-                    extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
+
+                    if contains_face(str(image_filename)):
+                        extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
+                    else:
+                        image_filename.unlink()
 
             pdf_document.close()
 
@@ -239,10 +152,14 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
             for i, image in enumerate(images):
                 image_filename = output_folder / f"page_{i+1}.png"
                 image.save(image_filename, "PNG")
-                extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
+
+                if contains_face(str(image_filename)):
+                    extracted_images.append(f"/static/images/{session_id}/{image_filename.name}")
+                else:
+                    image_filename.unlink()
 
         if not extracted_images:
-            raise HTTPException(status_code=404, detail="لم يتم العثور على أي صور في الملف")
+            raise HTTPException(status_code=404, detail="لم يتمكن من تحديد صور وجه في الصورة")
 
         base_url = str(request.base_url).rstrip("/")
         full_links = [f"{base_url}{url}" for url in extracted_images]
