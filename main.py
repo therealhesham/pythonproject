@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from pdf2image import convert_from_path
@@ -13,6 +13,9 @@ import cv2  # OpenCV
 import uuid
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
+from typing import List
+import io
+import img2pdf
 
 # إعداد FastAPI
 app = FastAPI()
@@ -131,3 +134,43 @@ async def extract_images(file: UploadFile = File(...), request: Request = None):
 
     finally:
         file.file.close()
+
+
+@app.post("/convert")
+async def convert(images: List[UploadFile] = File(...)):
+    """
+    استقبال عدة صور وتحويلها إلى ملف PDF واحد.
+    يعادل راوت Flask التالي:
+    /convert (POST) مع حقل form-data باسم images (multiple files)
+    """
+    if not images:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    img_list: List[bytes] = []
+    for f in images:
+        if f.filename:
+            contents = await f.read()
+            if contents:
+                img_list.append(contents)
+
+    if not img_list:
+        raise HTTPException(status_code=400, detail="No images selected")
+
+    try:
+        # Convert images bytes إلى PDF bytes
+        pdf_bytes = img2pdf.convert(img_list)
+
+        pdf_io = io.BytesIO(pdf_bytes)
+        pdf_io.seek(0)
+
+        headers = {
+            "Content-Disposition": 'attachment; filename="converted.pdf"'
+        }
+
+        return StreamingResponse(
+            pdf_io,
+            media_type="application/pdf",
+            headers=headers,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")

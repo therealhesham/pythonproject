@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir \
     Pillow \
     python-multipart \
     opencv-python-headless \
-    apscheduler
+    apscheduler \
+    img2pdf
 
 # Make sure static folder exists
 RUN mkdir -p /app/static/images
